@@ -369,7 +369,7 @@ pub async fn post_client_setup(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(code) = require_token(&state, &headers, false) {
+    if let Err(code) = require_token(&state, &headers, true) {
         return code.into_response();
     }
     let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
