@@ -274,11 +274,20 @@ fn stream_sse(
     tokio::spawn(async move {
         use futures_util::StreamExt;
         let mut restorer = super::sse::SseRestorer::new(store.as_ref(), creator);
+        let mut utf8_pending = Vec::new();
         let mut stream = upstream.bytes_stream();
         while let Some(item) = stream.next().await {
             match item {
                 Ok(chunk) => {
-                    let text = String::from_utf8_lossy(&chunk);
+                    let text = match decode_stream_chunk(&mut utf8_pending, &chunk) {
+                        Ok(text) => text,
+                        Err(e) => {
+                            let _ = tx
+                                .send(Err(std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+                                .await;
+                            return;
+                        }
+                    };
                     match restorer.push(&text) {
                         Ok(s) if !s.is_empty() => {
                             if tx.send(Ok(Bytes::from(s))).await.is_err() {
@@ -307,6 +316,15 @@ fn stream_sse(
                 }
             }
         }
+        if !utf8_pending.is_empty() {
+            let _ = tx
+                .send(Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "incomplete UTF-8 stream",
+                )))
+                .await;
+            return;
+        }
         if let Ok(tail) = restorer.flush() {
             if !tail.is_empty() {
                 let _ = tx.send(Ok(Bytes::from(tail))).await;
@@ -319,6 +337,18 @@ fn stream_sse(
     response
         .body(Body::from_stream(body_stream))
         .map_err(|_| (StatusCode::INTERNAL_SERVER_ERROR, "response").into_response())
+}
+
+fn decode_stream_chunk(pending: &mut Vec<u8>, chunk: &[u8]) -> Result<String, std::str::Utf8Error> {
+    pending.extend_from_slice(chunk);
+    let valid = match std::str::from_utf8(pending) {
+        Ok(_) => pending.len(),
+        Err(e) if e.error_len().is_none() => e.valid_up_to(),
+        Err(e) => return Err(e),
+    };
+    let text = std::str::from_utf8(&pending[..valid])?.to_owned();
+    pending.drain(..valid);
+    Ok(text)
 }
 
 fn tally_hits(state: &AppState, raw: &Bytes) -> (Vec<String>, Vec<u32>) {
@@ -499,6 +529,16 @@ fn restore_response(
 #[cfg(test)]
 mod header_tests {
     use super::*;
+    #[test]
+    fn stream_decodes_chinese_split_at_every_byte() {
+        let mut pending = Vec::new();
+        let mut out = String::new();
+        for b in "已还原手机号。".as_bytes() {
+            out.push_str(&decode_stream_chunk(&mut pending, &[*b]).unwrap());
+        }
+        assert_eq!(out, "已还原手机号。");
+        assert!(pending.is_empty());
+    }
     #[test]
     fn build_client_accepts_empty_proxy() {
         assert!(build_http_client("").is_ok());
