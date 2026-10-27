@@ -16,12 +16,14 @@ use veil_engine::rules::RuleSet;
 use veil_engine::walk::{desensitize_json, WalkError};
 
 use super::classify::{classify, upstream_base, ProtocolFamily, UpstreamConfig};
+use super::classify::{codex_chatgpt_path, CODEX_CHATGPT_UPSTREAM};
 use crate::admin::{now_unix_ms, TrafficEvent, TrafficLog};
 use crate::logging;
 
 #[derive(Clone)]
 pub struct AppState {
     pub upstream: UpstreamConfig,
+    pub codex_chatgpt_upstream: String,
     pub body_limit_bytes: usize,
     pub store: Arc<dyn MappingStore + Send + Sync>,
     pub rules: Arc<RuleSet>,
@@ -60,6 +62,7 @@ impl AppState {
     ) -> Result<Self, String> {
         Ok(Self {
             upstream,
+            codex_chatgpt_upstream: CODEX_CHATGPT_UPSTREAM.into(),
             body_limit_bytes,
             store,
             rules,
@@ -169,11 +172,22 @@ async fn proxy_inner(
 
     let creator = creator_from_headers(&headers);
     let body = prepare_body(state, &headers, &raw, &creator)?;
+    let requested_stream = serde_json::from_slice::<Value>(&raw)
+        .ok()
+        .and_then(|v| v.get("stream").and_then(Value::as_bool))
+        .unwrap_or(false);
 
-    let base = upstream_base(family, &state.upstream).trim_end_matches('/');
+    let subscription_path = codex_chatgpt_path(&path);
+    // Subscription credentials must not go to the configurable API upstream.
+    let base = if subscription_path.is_some() {
+        state.codex_chatgpt_upstream.as_str()
+    } else {
+        upstream_base(family, &state.upstream)
+    }
+    .trim_end_matches('/');
     let mut url = String::new();
     url.push_str(base);
-    url.push_str(&path);
+    url.push_str(subscription_path.unwrap_or(&path));
     if let Some(q) = query {
         url.push('?');
         url.push_str(&q);
@@ -226,7 +240,18 @@ async fn proxy_inner(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
         .to_ascii_lowercase();
-    let streaming = content_type.contains("event-stream");
+    // The subscription backend can omit/mislabel Content-Type on an SSE response.
+    // Error responses must retain their original (usually JSON) representation.
+    let streaming = content_type.contains("event-stream")
+        || (subscription_path.is_some() && status.is_success() && requested_stream);
+    if streaming {
+        if let Some(headers) = response.headers_mut() {
+            headers.insert(
+                header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            );
+        }
+    }
     let (hit_types, hit_counts) = tally_hits(state, &raw);
     let hits = hit_types.join(",");
     logging::proxy(&[
@@ -234,6 +259,7 @@ async fn proxy_inner(
         ("path", &path),
         ("status", &status.as_u16().to_string()),
         ("stream", if streaming { "1" } else { "0" }),
+        ("content_type", &content_type),
         ("hits", &hits),
         ("ms", &started.elapsed().as_millis().to_string()),
     ]);
