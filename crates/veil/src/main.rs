@@ -60,6 +60,7 @@ fn print_help() {
     eprintln!("  veil start              start in background");
     eprintln!("  veil start --foreground");
     eprintln!("  veil setup [--clients LIST] [--upstream URL]");
+    eprintln!("  veil setup --clients codex --chatgpt   keep the existing ChatGPT login");
     eprintln!("      clients: claude,codex,pi,codebuddy,grok,hermes,trae,all");
     eprintln!("  veil update [--check]   download latest GitHub release");
     eprintln!("  veil ui                 open the console");
@@ -316,8 +317,18 @@ fn cmd_setup(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         setup::apply_chained_upstream(&mut cfg, Some(url));
     }
     println!("each app keeps its own upstream behind a local port");
+    let mut added_routes = false;
     for id in &ids {
+        if *id == "codex" && args.iter().any(|a| a == "--chatgpt") {
+            let connection = veil::codex::connect(cfg.proxy_port)?;
+            println!("  Codex ChatGPT → {}", connection.base_url);
+            println!("  Profile: {}", connection.profile_path.display());
+            println!("  Start with: {}", connection.launch_command);
+            println!("  Base configuration and existing login are unchanged.");
+            continue;
+        }
         let (r, route) = clients::wire_client(&mut cfg, id, explicit.as_deref())?;
+        added_routes = true;
         println!(
             "  {}  http://127.0.0.1:{}  →  {}  ({})",
             r.id,
@@ -328,9 +339,13 @@ fn cmd_setup(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     }
     cfg.save(&data_dir)?;
     println!();
-    println!(
-        "Restart the selected apps. Restart Veil if it was already running, so new ports listen."
-    );
+    if added_routes {
+        println!("Restart the selected apps. Restart Veil if it was already running, so new ports listen.");
+    } else {
+        println!(
+            "Run codex --profile veil. Plain codex is unchanged. Veil does not need restarting."
+        );
+    }
     println!("API keys stay in the client; Veil pass-throughs them.");
     Ok(())
 }
