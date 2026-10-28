@@ -14,7 +14,7 @@ pub enum WalkError {
     #[error("store unavailable")]
     StoreUnavailable,
 }
-
+// 遍历里面所有字符串字段，按规则判断要不要脱敏
 pub fn desensitize_json(
     value: &Value,
     rules: &RuleSet,

@@ -114,7 +114,7 @@ async fn proxy_inner(
     let method_s = method.as_str().to_string();
     let headers = req.headers().clone();
     let started = std::time::Instant::now();
-
+    // 判断请求属于哪一种模型接口
     let family = match classify(&path) {
         Some(f) => f,
         None => match state.default_family {
@@ -148,7 +148,7 @@ async fn proxy_inner(
         ("path", &path),
         ("family", fam),
     ]);
-
+    // 检查请求格式，并读取请求体
     if is_multipart(&headers) {
         return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "multipart rejected").into_response());
     }
@@ -158,7 +158,7 @@ async fn proxy_inner(
             return Err((StatusCode::PAYLOAD_TOO_LARGE, "request too large").into_response());
         }
     }
-
+    // 客户端原始内容，可能包含手机号等敏感信息
     let raw = req
         .into_body()
         .collect()
@@ -171,12 +171,12 @@ async fn proxy_inner(
     }
 
     let creator = creator_from_headers(&headers);
-    let body = prepare_body(state, &headers, &raw, &creator)?;
+    let body = prepare_body(state, &headers, &raw, &creator)?;  // 已替换敏感信息的内容
     let requested_stream = serde_json::from_slice::<Value>(&raw)
         .ok()
         .and_then(|v| v.get("stream").and_then(Value::as_bool))
         .unwrap_or(false);
-
+    // 拼出真正的上游地址
     let subscription_path = codex_chatgpt_path(&path);
     // Subscription credentials must not go to the configurable API upstream.
     let base = if subscription_path.is_some() {
@@ -192,7 +192,7 @@ async fn proxy_inner(
         url.push('?');
         url.push_str(&q);
     }
-
+    // 组装请求并发送
     let mut builder = state.client.request(method, &url);
     let force_al = state.header_profile == HeaderProfile::RegionNeutral;
     let mut wrote_al = false;
@@ -224,7 +224,7 @@ async fn proxy_inner(
         ]);
         (StatusCode::BAD_GATEWAY, "upstream error").into_response()
     })?;
-
+    // 收到上游响应头，判断是否为流式响应
     let status =
         StatusCode::from_u16(upstream.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
     let mut response = Response::builder().status(status);
@@ -252,7 +252,7 @@ async fn proxy_inner(
             );
         }
     }
-    let (hit_types, hit_counts) = tally_hits(state, &raw);
+    let (hit_types, hit_counts) = tally_hits(state, &raw); // 记录页面中看到的流量信息,记录发生在响应体处理之前，所以此时的 200 不代表整个流式回复已经成功结束，耗时也不是完整生成耗时。
     let hits = hit_types.join(",");
     logging::proxy(&[
         ("event", "up"),
@@ -275,11 +275,11 @@ async fn proxy_inner(
         None,
         &creator.prefix8(),
     );
-
+    // 流式响应
     if streaming {
         return stream_sse(response, upstream, Arc::clone(&state.store), creator);
     }
-
+    // 非流式响应（普通 HTTP 响应）
     let bytes = upstream
         .bytes()
         .await
