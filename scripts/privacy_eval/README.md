@@ -1,5 +1,30 @@
 # 本地隐私识别评测
 
+## 大请求性能测试（1MB / 5MB / 10MB）
+
+离线测完整 JSON 请求体，使用默认规则与独立临时加密 SQLite，覆盖无敏感信息、每 64KiB 四个敏感项、每 4KiB 四个敏感项。MB 按 1,000,000 字节计算。每条件测 3 次空映射首次脱敏、20 次热映射脱敏及独立识别，并校验命中数、占位符数量和完整还原。计时包括 JSON 解析和输出序列化，不包括网络和模型。
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk cargo build --release --offline -p veil-store --example request_size_bench
+mkdir -p reports/privacy-eval/request-size
+target/release/examples/request_size_bench 20 > reports/privacy-eval/request-size/raw.jsonl
+python3 scripts/privacy_eval/summarize_request_size.py reports/privacy-eval/request-size
+```
+
+输出 `raw.jsonl`、`summary.json`、`REPORT.md`。其他机器使用其正常 SDK。汇总脚本当前记录本轮机器与基础提交信息，换机器复测时需同步更新报告环境描述。
+
+进一步拆分热映射的解析、识别、SQLite 映射、字符串替换与输出编码，并对照一次拼接替换算法、测量完整还原与 10MB 单规则耗时：
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk cargo build --release --offline -p veil-store --example request_stage_bench
+target/release/examples/request_stage_bench > reports/privacy-eval/request-size/stages.jsonl
+python3 scripts/privacy_eval/summarize_request_stages.py reports/privacy-eval/request-size
+```
+
+阶段诊断每条件 5 次，单规则每条件 3 次，输出 `STAGES.md`。诊断先获取全部映射、再执行替换，逐次检查与生产脱敏输出精确相等。单规则耗时受规则优先级和剩余间隙上下文影响，不可直接相加为生产识别耗时。
+
+## 本地语料评测
+
 本工具复用 Presidio 的中文归档，调用 Veil 真实引擎、JSON 脱敏/还原及加密 SQLite 存储。完整结果与解释见 [实测报告](../../reports/privacy-eval/2026-10-28/REPORT.md) 和 [定位分析](../../reports/privacy-eval/2026-10-28/ANALYSIS.md)。生产规则不在本任务中修改。
 
 ```bash
