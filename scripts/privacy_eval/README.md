@@ -23,6 +23,19 @@ python3 scripts/privacy_eval/summarize_request_stages.py reports/privacy-eval/re
 
 阶段诊断每条件 5 次，单规则每条件 3 次，输出 `STAGES.md`。诊断先获取全部映射、再执行替换，逐次检查与生产脱敏输出精确相等。单规则耗时受规则优先级和剩余间隙上下文影响，不可直接相加为生产识别耗时。
 
+## 9MB 历史 + 1MB 新增的历史复用实验
+
+对比全量处理与消息级缓存原型，包含完整 JSON 解析、完整消息对象 SHA-256 指纹校验、缓存复制、未命中脱敏和输出编码。覆盖固定 9MB 历史的重复请求对照，以及滚动对话中复用 8MB、重新处理新助手回复和当前用户消息共 2MB 的场景。每条路径映射均预热；缓存首次填充单列。只增加离线示例，不给生产代理启用缓存。
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk cargo build --release --offline -p veil-store --example history_reuse_bench
+mkdir -p reports/privacy-eval/history-reuse
+target/release/examples/history_reuse_bench 20 > reports/privacy-eval/history-reuse/raw.jsonl
+python3 scripts/privacy_eval/summarize_history_reuse.py reports/privacy-eval/history-reuse
+```
+
+每种密度、场景测 20 轮成对请求并交替执行顺序，逐次验证输出字节相等、完整还原和占位符数量。另验证正文、角色、工具字段、用户身份、实际规则变化和实际映射清理后的缓存失效。版本失效由示例显式通知；实际接入还需映射生命周期通知和缓存容量管理。汇总输出 `summary.json` 与 `REPORT.md`。
+
 ## 本地语料评测
 
 本工具复用 Presidio 的中文归档，调用 Veil 真实引擎、JSON 脱敏/还原及加密 SQLite 存储。完整结果与解释见 [实测报告](../../reports/privacy-eval/2026-10-28/REPORT.md) 和 [定位分析](../../reports/privacy-eval/2026-10-28/ANALYSIS.md)。生产规则不在本任务中修改。
