@@ -14,11 +14,20 @@ fn rules(v: &Value) -> RuleSet {
     let base = builtin_ruleset();
     let mut rs = base.rules().to_vec();
     for r in &mut rs {
-        if v["email"].as_bool() == Some(true) && r.id == "email" { r.enabled = true; }
-        if let Some(only) = v["only"].as_str() { r.enabled &= r.id == only; }
-        if v["omit"].as_str() == Some(r.id.as_str()) { r.enabled = false; }
+        if v["email"].as_bool() == Some(true) && r.id == "email" {
+            r.enabled = true;
+        }
+        if let Some(only) = v["only"].as_str() {
+            r.enabled &= r.id == only;
+        }
+        if v["omit"].as_str() == Some(r.id.as_str()) {
+            r.enabled = false;
+        }
     }
-    RuleSet::new(rs, Allowlist::from(["127.0.0.1", "localhost", "0.0.0.0", "::1"]))
+    RuleSet::new(
+        rs,
+        Allowlist::from(["127.0.0.1", "localhost", "0.0.0.0", "::1"]),
+    )
 }
 
 fn pipeline(text: &str, rs: &RuleSet, store: &dyn MappingStore, roundtrip: bool) -> Value {
@@ -27,7 +36,12 @@ fn pipeline(text: &str, rs: &RuleSet, store: &dyn MappingStore, roundtrip: bool)
     let input: Value = serde_json::from_slice(&wire).unwrap();
     let out = desensitize_json(&input, rs, store, &anonymous_creator()).unwrap();
     std::hint::black_box(serde_json::to_vec(&out).unwrap());
-    if roundtrip { assert_eq!(restore_json(&out, store, &anonymous_creator()).unwrap(), input); }
+    if roundtrip {
+        assert_eq!(
+            restore_json(&out, store, &anonymous_creator()).unwrap(),
+            input
+        );
+    }
     out
 }
 
@@ -47,46 +61,76 @@ fn run(v: Value) -> Value {
         let spans: Vec<_> = hits.iter().map(|h| json!({"type":h.type_prefix,"start":text[..h.start].chars().count(),"end":text[..h.end].chars().count(),"byte_start":h.start,"byte_end":h.end})).collect();
         return json!({"hits":spans,"detect_ns":ns,"roundtrip_ok":true,"masked":masked});
     }
-    let texts: Arc<Vec<String>> = Arc::new(v["texts"].as_array().unwrap().iter().map(|t| t.as_str().unwrap().to_owned()).collect());
+    let texts: Arc<Vec<String>> = Arc::new(
+        v["texts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|t| t.as_str().unwrap().to_owned())
+            .collect(),
+    );
     assert!(!texts.is_empty());
     let mode = v["mode"].as_str().unwrap_or("detect").to_owned();
     let threads = v["threads"].as_u64().unwrap_or(1) as usize;
     let duration = Duration::from_millis(v["duration_ms"].as_u64().unwrap_or(500));
     let temp = tempfile::tempdir().unwrap();
     let store: Arc<dyn MappingStore + Send + Sync> = if mode == "sqlite" {
-        Arc::new(SqliteStore::open(temp.path().join("probe.db"), &[7u8;32]).unwrap())
-    } else { Arc::new(MemoryStore::new()) };
+        Arc::new(SqliteStore::open(temp.path().join("probe.db"), &[7u8; 32]).unwrap())
+    } else {
+        Arc::new(MemoryStore::new())
+    };
     // Cold insertion is measured separately; warm measurements reuse one shared store.
     let cold_start = Instant::now();
-    if mode != "detect" { for t in texts.iter() { pipeline(t, &rs, store.as_ref(), false); } }
+    if mode != "detect" {
+        for t in texts.iter() {
+            pipeline(t, &rs, store.as_ref(), false);
+        }
+    }
     let cold_ns = cold_start.elapsed().as_nanos();
-    for t in texts.iter() { std::hint::black_box(rs.find_hits(t)); }
+    for t in texts.iter() {
+        std::hint::black_box(rs.find_hits(t));
+    }
     let gate = Arc::new(Barrier::new(threads + 1));
-    let handles: Vec<_> = (0..threads).map(|worker| {
-        let (texts, rs, store, mode, gate) = (texts.clone(), rs.clone(), store.clone(), mode.clone(), gate.clone());
-        std::thread::spawn(move || {
-            gate.wait();
-            let start = Instant::now();
-            let mut samples = Vec::new();
-            let mut i = worker;
-            let mut chars = 0usize;
-            while start.elapsed() < duration {
-                let text = &texts[i % texts.len()];
-                let now = Instant::now();
-                if mode == "detect" { std::hint::black_box(rs.find_hits(text)); }
-                else { std::hint::black_box(pipeline(text, &rs, store.as_ref(), false)); }
-                samples.push(now.elapsed().as_nanos() as u64);
-                chars += text.chars().count();
-                i += 1;
-            }
-            (samples, chars)
+    let handles: Vec<_> = (0..threads)
+        .map(|worker| {
+            let (texts, rs, store, mode, gate) = (
+                texts.clone(),
+                rs.clone(),
+                store.clone(),
+                mode.clone(),
+                gate.clone(),
+            );
+            std::thread::spawn(move || {
+                gate.wait();
+                let start = Instant::now();
+                let mut samples = Vec::new();
+                let mut i = worker;
+                let mut chars = 0usize;
+                while start.elapsed() < duration {
+                    let text = &texts[i % texts.len()];
+                    let now = Instant::now();
+                    if mode == "detect" {
+                        std::hint::black_box(rs.find_hits(text));
+                    } else {
+                        std::hint::black_box(pipeline(text, &rs, store.as_ref(), false));
+                    }
+                    samples.push(now.elapsed().as_nanos() as u64);
+                    chars += text.chars().count();
+                    i += 1;
+                }
+                (samples, chars)
+            })
         })
-    }).collect();
+        .collect();
     let start = Instant::now();
     gate.wait();
     let mut samples = Vec::new();
     let mut chars = 0;
-    for h in handles { let (s,c) = h.join().unwrap(); samples.extend(s); chars += c; }
+    for h in handles {
+        let (s, c) = h.join().unwrap();
+        samples.extend(s);
+        chars += c;
+    }
     let wall = start.elapsed().as_secs_f64();
     json!({"samples_ns":samples,"wall_seconds":wall,"characters":chars,"cold_pass_ns":cold_ns,"cold_records":texts.len()})
 }
