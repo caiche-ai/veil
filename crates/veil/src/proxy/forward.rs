@@ -13,7 +13,7 @@ use veil_engine::builtin::builtin_ruleset;
 use veil_engine::creator::creator_from_headers;
 use veil_engine::mapping::MappingStore;
 use veil_engine::rules::RuleSet;
-use veil_engine::walk::{desensitize_json, WalkError};
+use veil_engine::walk::WalkError;
 
 use super::classify::{classify, upstream_base, ProtocolFamily, UpstreamConfig};
 use super::classify::{codex_chatgpt_path, CODEX_CHATGPT_UPSTREAM};
@@ -27,6 +27,7 @@ pub struct AppState {
     pub body_limit_bytes: usize,
     pub store: Arc<dyn MappingStore + Send + Sync>,
     pub rules: Arc<RuleSet>,
+    pub message_cache: Arc<super::MessageCache>,
     pub client: reqwest::Client,
     pub traffic: TrafficLog,
     pub default_family: Option<ProtocolFamily>,
@@ -66,6 +67,7 @@ impl AppState {
             body_limit_bytes,
             store,
             rules,
+            message_cache: Arc::new(super::MessageCache::default()),
             client: build_http_client(proxy_url)?,
             traffic: TrafficLog::default(),
             default_family: None,
@@ -171,7 +173,7 @@ async fn proxy_inner(
     }
 
     let creator = creator_from_headers(&headers);
-    let body = prepare_body(state, &headers, &raw, &creator)?;  // 已替换敏感信息的内容
+    let body = prepare_body(state, &headers, &raw, &creator)?; // 已替换敏感信息的内容
     let requested_stream = serde_json::from_slice::<Value>(&raw)
         .ok()
         .and_then(|v| v.get("stream").and_then(Value::as_bool))
@@ -430,7 +432,12 @@ fn prepare_body(
     if looks_like_json(headers, raw) {
         let value: Value = serde_json::from_slice(raw)
             .map_err(|_| (StatusCode::BAD_GATEWAY, "unscannable json").into_response())?;
-        match desensitize_json(&value, &state.rules, state.store.as_ref(), creator) {
+        match state.message_cache.desensitize_json(
+            &value,
+            &state.rules,
+            state.store.as_ref(),
+            creator,
+        ) {
             Ok(mut redacted) => {
                 if state.alias_hint {
                     super::alias_hint::inject_alias_hint(&mut redacted);

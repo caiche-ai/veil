@@ -112,7 +112,7 @@ fn ns(start: Instant) -> u64 {
     start.elapsed().as_nanos() as u64
 }
 
-fn message(id: usize, role: &str, stride: usize) -> Value {
+pub(crate) fn message(id: usize, role: &str, stride: usize) -> Value {
     let filler = "This document describes routine project planning and implementation details. ";
     let mut text = String::with_capacity(MB);
     let mut block = 0;

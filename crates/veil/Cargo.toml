@@ -17,7 +17,7 @@ hex.workspace = true
 rand.workspace = true
 sha2.workspace = true
 base64 = "0.22"
-tokio.workspace = true
+tokio = { workspace = true, features = ["time"] }
 axum.workspace = true
 reqwest.workspace = true
 http-body-util.workspace = true

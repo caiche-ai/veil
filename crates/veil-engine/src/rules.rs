@@ -1,9 +1,11 @@
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use fancy_regex::{Regex, RegexBuilder};
 
 const DEFAULT_TIMEOUT_MS: u64 = 50;
 const REGEX_BACKTRACK_LIMIT: usize = 1_000_000;
+static NEXT_RULESET_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// A user-manageable matcher that detects one class of sensitive value.
 #[derive(Clone, Debug)]
@@ -50,6 +52,7 @@ pub struct Hit {
 pub struct RuleSet {
     rules: Vec<Rule>,
     allowlist: Allowlist,
+    cache_revision: u64,
 }
 
 impl Rule {
@@ -157,9 +160,61 @@ where
 }
 
 impl RuleSet {
+    /// Identity of the immutable compiled policy. Clones share the identity;
+    /// rebuilding also covers regex builder options not visible in source text.
+    pub fn cache_revision(&self) -> u64 {
+        self.cache_revision
+    }
+
+    /// Fingerprint configured rules and allowlists; pair with cache_revision for
+    /// compiled matcher options that are not represented in pattern strings.
+    pub fn cache_fingerprint(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        fn field(hash: &mut Sha256, value: &[u8]) {
+            hash.update((value.len() as u64).to_le_bytes());
+            hash.update(value);
+        }
+        let mut hash = Sha256::new();
+        hash.update((self.rules.len() as u64).to_le_bytes());
+        for rule in &self.rules {
+            field(&mut hash, rule.id.as_bytes());
+            field(&mut hash, rule.type_prefix.as_bytes());
+            hash.update([u8::from(rule.enabled)]);
+            hash.update(rule.priority.to_le_bytes());
+            hash.update(rule.timeout_ms.to_le_bytes());
+            match &rule.matcher {
+                Matcher::Regex(re) => {
+                    hash.update([0]);
+                    field(&mut hash, re.as_str().as_bytes());
+                }
+                Matcher::Dictionary(words) => {
+                    hash.update([1]);
+                    hash.update((words.len() as u64).to_le_bytes());
+                    for word in words {
+                        field(&mut hash, word.as_bytes());
+                    }
+                }
+                Matcher::Ip => hash.update([2]),
+                #[cfg(test)]
+                Matcher::BlockUntilTimeout => hash.update([3]),
+            }
+        }
+        let mut allowlist: Vec<_> = self.allowlist.entries.iter().collect();
+        allowlist.sort();
+        hash.update((allowlist.len() as u64).to_le_bytes());
+        for entry in allowlist {
+            field(&mut hash, entry.as_bytes());
+        }
+        hash.finalize().into()
+    }
+
     pub fn new(mut rules: Vec<Rule>, allowlist: Allowlist) -> Self {
         rules.sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
-        Self { rules, allowlist }
+        Self {
+            rules,
+            allowlist,
+            cache_revision: NEXT_RULESET_REVISION.fetch_add(1, Ordering::Relaxed),
+        }
     }
 
     pub fn rules(&self) -> &[Rule] {
@@ -392,6 +447,25 @@ mod tests {
         r.enabled = false;
         let set = ruleset(vec![r]);
         assert!(set.find_hits("call 13800138000").is_empty());
+    }
+
+    #[test]
+    fn cache_revision_tracks_rebuilt_compiled_matchers_and_survives_cloning() {
+        let sensitive = Rule::regex("secret", "SECRET", "secret", 1);
+        let mut insensitive = sensitive.clone();
+        insensitive.matcher = Matcher::Regex(
+            RegexBuilder::new("secret")
+                .case_insensitive(true)
+                .build()
+                .unwrap(),
+        );
+        let first = ruleset(vec![sensitive]);
+        let second = ruleset(vec![insensitive]);
+        assert_eq!(first.cache_fingerprint(), second.cache_fingerprint());
+        assert_ne!(first.cache_revision(), second.cache_revision());
+        assert_eq!(first.cache_revision(), first.clone().cache_revision());
+        assert!(first.find_hits("SECRET").is_empty());
+        assert_eq!(second.find_hits("SECRET").len(), 1);
     }
 
     #[test]

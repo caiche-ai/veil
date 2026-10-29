@@ -36,6 +36,17 @@ python3 scripts/privacy_eval/summarize_history_reuse.py reports/privacy-eval/his
 
 每种密度、场景测 20 轮成对请求并交替执行顺序，逐次验证输出字节相等、完整还原和占位符数量。另验证正文、角色、工具字段、用户身份、实际规则变化和实际映射清理后的缓存失效。版本失效由示例显式通知；实际接入还需映射生命周期通知和缓存容量管理。汇总输出 `summary.json` 与 `REPORT.md`。
 
+生产实现复测（含 SQLite 单事务映射验证、密文校验及访问时间刷新，使用 Responses/Codex `input[]`）：
+
+```bash
+SDKROOT=/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk VEIL_SKIP_UI_BUILD=1 cargo build --release --offline -p veil --example history_cache_bench
+mkdir -p reports/privacy-eval/history-cache-production
+target/release/examples/history_cache_bench 20 > reports/privacy-eval/history-cache-production/raw.jsonl
+python3 scripts/privacy_eval/summarize_history_cache.py reports/privacy-eval/history-cache-production
+```
+
+生产缓存按全局预算执行 LRU/空闲过期，保留近期历史而非每轮只保留当前请求，汇总会报告缓存计费峰值。映射对两条路径均预热，首次消息缓存填充单列。配置项和失效行为见 [使用说明](../../docs/使用.md#历史消息缓存)。
+
 ## 本地语料评测
 
 本工具复用 Presidio 的中文归档，调用 Veil 真实引擎、JSON 脱敏/还原及加密 SQLite 存储。完整结果与解释见 [实测报告](../../reports/privacy-eval/2026-10-28/REPORT.md) 和 [定位分析](../../reports/privacy-eval/2026-10-28/ANALYSIS.md)。生产规则不在本任务中修改。

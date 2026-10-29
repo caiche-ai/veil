@@ -170,6 +170,18 @@ async fn serve(data_dir: &std::path::Path, cfg: &Config) -> Result<(), Box<dyn s
     .map_err(|e| format!("proxy client: {e}"))?
     .with_traffic(traffic.clone());
     state.alias_hint = cfg.alias_hint;
+    state.message_cache = Arc::new(veil::proxy::MessageCache::new(&cfg.message_cache));
+    let cache = Arc::downgrade(&state.message_cache);
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
+        loop {
+            interval.tick().await;
+            let Some(cache) = cache.upgrade() else {
+                break;
+            };
+            cache.expire_idle();
+        }
+    });
     let loopback = cfg.bind == "127.0.0.1" || cfg.bind == "localhost" || cfg.bind == "::1";
     let admin = AdminState {
         data_dir: data_dir.to_path_buf(),
